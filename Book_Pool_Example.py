@@ -167,7 +167,7 @@ def main():
     # Post-trade box near red dot
     ax.text(
         y_new + 1000, x_new + 1200,
-        f"Post-trade price of ETH\np = {p_eth_post:.6f} USDC",
+        f"Post-trade price of ETH\n$p' = {p_eth_post:.6f}$ USDC",
         fontsize=10,
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9)
     )
