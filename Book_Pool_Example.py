@@ -1,187 +1,158 @@
 import matplotlib
-matplotlib.use("TkAgg")  # Use an interactive backend for displaying plots
+matplotlib.use("TkAgg")  # Interactive backend
 
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import seaborn as sns
-import simpy
-from scipy.interpolate import interp1d
+import matplotlib.ticker as mticker
 
-class LiquidityPool:
-    def __init__(self, q_reserve, y_reserve, K, fee_rate):
-        self.q_reserve = q_reserve  # Risky asset reserve
-        self.y_reserve = y_reserve  # Stablecoin reserve
-        self.K = K  # Liquidity constant
-        self.fee_rate = fee_rate  # Trading fee rate
 
-    def invariant_function(self, q, y):
-        """Invariant function F_i(q, y) = K."""
-        return q * y
-
-    def price_function(self, q, y):
-        """Pricing function P_i(q, y)."""
-        return y / q
-
-    def trade(self, delta_y):
-        """Simulate a trade and update reserves."""
-        new_y_reserve = self.y_reserve + delta_y
-        delta_q = self.q_reserve - (self.K / new_y_reserve)
-        self.q_reserve -= delta_q
-        self.y_reserve = new_y_reserve
-
-        # Apply trading fee
-        fee = abs(delta_y) * self.fee_rate
-        return delta_q, fee
-
-    def calculate_net_return(self, lp, delta_y, theta, fee_function):
-        """Calculate the net return \pi_{k,i}(s,z) for an LP."""
-        relative_return = lp.calculate_relative_return()
-        fees = fee_function(delta_y, theta)
-        return relative_return + fees
-
-class Filler:
-    def __init__(self, delta, theta):
-        self.delta = delta  # Trading budget
-        self.theta = theta  # Routing weight
-
-    def route_order(self, pool_a, pool_b):
-        """Route the order across the two pools."""
-        delta_y_a = self.theta * self.delta
-        delta_y_b = (1 - self.theta) * self.delta
-
-        delta_q_a, fee_a = pool_a.trade(delta_y_a)
-        delta_q_b, fee_b = pool_b.trade(delta_y_b)
-
-        return {
-            "Pool A": {"delta_q": delta_q_a, "fee": fee_a},
-            "Pool B": {"delta_q": delta_q_b, "fee": fee_b}
-        }
-
-class LiquidityProvider:
-    def __init__(self, omega, initial_value):
-        self.omega = omega  # Pro-rata contribution (constant)
-        self.initial_value = initial_value  # Initial value of the LP's position
-        self.current_value = initial_value  # Current value of the LP's position
-
-    def update_value(self, pool_price, pool_reserves):
-        """Update the value of the LP's position based on pool price and reserves."""
-        y_reserve, q_reserve = pool_reserves
-        self.current_value = self.omega * (y_reserve + pool_price * q_reserve)
-
-    def calculate_relative_return(self):
-        """Calculate the relative inventory return R_{k,i}."""
-        return (self.current_value - self.initial_value) / self.initial_value
-
-# Example fee function
-def fee_function(delta_y, theta):
-    """Calculate fees \Phi_i(\Delta_y^i,\theta)."""
-    return abs(delta_y) * theta * 0.003  # Example fee calculation
-
-# Simulation framework
 def main():
-    # One Uniswap v2 no-fee pool: USDC (x) / ETH (y)
-    x = 50_000.0   # USDC reserve
-    y = 100_000.0  # ETH reserve
-    k = x * y
+    # Given example (no fees)
+    x = 2_000_000.0          # USDC reserve
+    y = 1_000.0              # ETH reserve
+    delta_x = 449_489.74     # USDC deposited by trader
+    k = x * y                # invariant
 
-    # Pre-trade price of ETH (in USDC)
-    p_eth_pre = x / y
+    # Trade outcome (USDC in, ETH out)
+    delta_y = (y * delta_x) / (x + delta_x)
+    x_new = x + delta_x
+    y_new = y - delta_y
 
-    # Trade: deposit Delta_y (ETH), receive Delta_x (USDC)
-    delta_y = 10_000.0
-    y_new = y + delta_y
-    x_new = k / y_new
-    delta_x = x - x_new
+    # Prices
+    p_spot_pre = x / y
+    p_effective = delta_x / delta_y
+    p_spot_post = x_new / y_new
 
-    # Post-trade price of ETH (in USDC)
-    p_eth_post = x_new / y_new
+    # Price impact (USDC)
+    expected_cost_at_pre_spot = delta_y * p_spot_pre
+    price_impact = delta_x - expected_cost_at_pre_spot
 
-    print("=== Uniswap v2 Single Pool (No Fee) ===")
-    print(f"Pre-trade price of ETH  = {p_eth_pre:.9f} USDC")
-    print(f"Post-trade price of ETH = {p_eth_post:.9f} USDC")
-    print(f"Price change (%)        = {((p_eth_post - p_eth_pre) / p_eth_pre) * 100:.6f}%")
-    print(f"x' = {x_new:.6f}, Delta_x = {delta_x:.6f}")
+    # Print checks
+    print("=== Uniswap v2 Example (No Fee) ===")
+    print(f"k = {k:,.0f}")
+    print(f"Pre-trade spot price p^s = {p_spot_pre:,.2f} USDC/ETH")
+    print(f"Delta_x = {delta_x:,.2f} USDC")
+    print(f"Delta_y = {delta_y:,.4f} ETH")
+    print(f"Effective price p^e = {p_effective:,.2f} USDC/ETH")
+    print(f"Price impact = {price_impact:,.2f} USDC")
+    print(f"x' = {x_new:,.2f}, y' = {y_new:,.4f}")
+    print(f"Post-trade spot price p^s' = {p_spot_post:,.2f} USDC/ETH")
 
-    # Invariant curve: x = k / y
-    y_vals = np.linspace(60_000, 140_000, 800)
+    # Invariant curve: x = k / y  (x-axis is ETH reserves y)
+    y_vals = np.linspace(300, 4000, 2000)
     x_vals = k / y_vals
 
-    # Segment between trade states is dashed
-    y_start, y_end = sorted([y, y_new])
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    # Dashed segment only between pre/post states
+    y_start, y_end = sorted([y_new, y])
     mask_left = y_vals < y_start
     mask_mid = (y_vals >= y_start) & (y_vals <= y_end)
     mask_right = y_vals > y_end
-
-    fig, ax = plt.subplots(figsize=(9, 5))
 
     ax.plot(y_vals[mask_left], x_vals[mask_left], color="steelblue", lw=1.4, label="Invariant curve")
     ax.plot(y_vals[mask_mid], x_vals[mask_mid], color="steelblue", lw=1.4, ls="--")
     ax.plot(y_vals[mask_right], x_vals[mask_right], color="steelblue", lw=1.4)
 
-    # Pre/Post trade points
-    ax.scatter([y], [x], s=30, color="green", zorder=5, label="Pre-trade state")
-    ax.scatter([y_new], [x_new], s=30, color="red", zorder=3, label="Post-trade state")
+    # Pre/Post points
+    ax.scatter([y], [x], s=12, color="green", zorder=6, label="Pre-trade spot")
+    ax.text(
+        y + 35, x + 10_000,
+        r"$p^{\mathrm{s}}_{x/y}=2000$",
+        color="green",
+        fontsize=11
+    )
 
-    # Tangent line at pre-trade point
-    # For x = k/y, slope is dx/dy = -k/y^2 = -x/y = -p_eth_pre
+    ax.scatter([y_new], [x_new], s=12, color="red", zorder=6, label="Post-trade spot")
+    ax.text(
+        y_new + 35, x_new + 10_000,
+        rf"$p_{{x/y}}^{{\mathrm{{s}}\prime}}\approx {p_spot_post:,.0f}$",
+        color="red",
+        fontsize=11
+    )
+
+    # Reserve guide lines
+    guide_kw = dict(colors="gray", linestyles="--", lw=1.0, alpha=0.55)
+    ax.vlines(y, ymin=0, ymax=x, **guide_kw)
+    ax.hlines(x, xmin=300, xmax=y, **guide_kw)
+    ax.vlines(y_new, ymin=0, ymax=x_new, **guide_kw)
+    ax.hlines(x_new, xmin=300, xmax=y_new, **guide_kw)
+
+    # Optional tangent at pre-trade point
     slope = -x / y
-
-    # Make tangent segment longer and high-contrast
-    dy_tan = 14_000
+    dy_tan = 300                       # was smaller
     y_tan = np.array([y - dy_tan, y + dy_tan])
     x_tan = x + slope * (y_tan - y)
-
     ax.plot(
         y_tan, x_tan,
         color="darkorange",
-        lw=1.6,      # thinner
+        lw=1.2,
         ls="--",
-        zorder=4,
-        label="Tangent at pre-trade point"
+        zorder=5,
+        label="Tangent line (pre-trade)"
     )
 
-    
-  
-
-    # Invariant label box
-    ax.text(
-        0.38, 0.96,
-        r"$xy = k = 5\times10^9$",
-        transform=ax.transAxes,
-        va="top",
-        fontsize=11,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9)
-    )
-
-    
-
-    # Pre-trade box near green dot
-    ax.text(
-        y - 18500, x - 6000,
-        f"Pre-trade price of ETH\np = {p_eth_pre:.6f} USDC",
-        fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9)
-    )
-
-    # Post-trade box near red dot
-    ax.text(
-        y_new + 1000, x_new + 1200,
-        f"Post-trade price of ETH\n$p' = {p_eth_post:.6f}$ USDC",
-        fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9)
-    )
-
+    # Axis and formatting
+    ax.set_xlim(300, 4000)
+    ax.set_ylim(0, 4_000_000)
     ax.set_title("Constant-Product Invariant and Pool Adjustment in a Uniswap v2 USDC/ETH Pool")
     ax.set_xlabel("ETH reserves (y)")
     ax.set_ylabel("USDC reserves (x)")
     ax.grid(True, alpha=0.25)
     ax.legend()
+
+    ax.ticklabel_format(style="plain", axis="both")
+    ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+
+    # Keep existing ticks and force-insert post-trade ETH reserve on x-axis
+    xticks = list(ax.get_xticks())
+    xticks.append(y_new)
+    xticks = sorted(set(round(t, 4) for t in xticks))
+    ax.set_xticks(xticks)
+
+    # Build ticks, then remove any tick too close to y_new
+    xticks = list(ax.get_xticks())
+    xticks = [t for t in xticks if abs(t - y_new) > 20]  # tolerance in x-axis units
+    xticks.append(y_new)
+    xticks = sorted(xticks)
+    ax.set_xticks(xticks)
+
+    # Label only one post-trade tick as 816.5
+    ax.set_xticklabels(["816.5" if abs(t - y_new) < 1e-6 else f"{t:,.0f}" for t in xticks])
+
+    # Optional: show only integer tick labels (clean)
+    ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+
+    # Smaller tick label fonts
+    ax.tick_params(axis="x", labelsize=8)
+    ax.tick_params(axis="y", labelsize=8)
+
+    # Optional: slight rotation to avoid overlap on x-axis
+    for lbl in ax.get_xticklabels():
+        lbl.set_rotation(20)
+        lbl.set_ha("right")
+
+    # 1) Force post-trade x-axis tick label to show exactly 816.5
+    xticks = sorted(set(list(ax.get_xticks()) + [y_new]))
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(["816.5" if abs(t - y_new) < 1e-6 else f"{t:,.0f}" for t in xticks])
+
+    # 2) Dashed guide lines from each spot to BOTH axes
+    guide_kw = dict(colors="gray", linestyles="--", lw=1.1, alpha=0.65)
+
+    # Pre-trade spot (y, x)
+    ax.vlines(y, ymin=0, ymax=x, **guide_kw)      # to x-axis
+    ax.hlines(x, xmin=0, xmax=y, **guide_kw)      # to y-axis
+
+    # Post-trade spot (y_new, x_new)
+    ax.vlines(y_new, ymin=0, ymax=x_new, **guide_kw)   # to x-axis
+    ax.hlines(x_new, xmin=0, xmax=y_new, **guide_kw)   # to y-axis
+
     plt.tight_layout()
-    plt.savefig("pool_example_graph.png", dpi=200)
+    plt.savefig("pool_example_graph_adjusted.png", dpi=200)
     plt.show()
 
 
 if __name__ == "__main__":
     main()
-
